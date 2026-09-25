@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <M5Unified.h>
 #include <bitset>
 #include <array>
@@ -18,6 +19,7 @@ constexpr unsigned long debounceInterval = 35;
 constexpr unsigned long simInterval = 100;
 
 constexpr bool enableDualCore = true;
+constexpr bool enableColor = false;
 
 // game state
 int cursorX = boardWidth / 2;
@@ -30,6 +32,15 @@ Board boards[3];
 Board& boardInit = boards[0];
 Board* boardCurr = &boards[1];
 Board* boardPrev = &boards[2];
+
+struct Color
+{
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
+
+Color boardColor[boardHeight][boardWidth];
 
 unsigned long lastButtonTime = 0;
 uint8_t gamepadStatePrev = 0xFF;
@@ -156,6 +167,66 @@ static int getAliveNeighborCount(Board& board, int x, int y)
   return total;
 }
 
+static void setInheritedColor(Board& board, int x, int y)
+{
+  int left = x == 0 ? boardWidth - 1 : x - 1;
+  int right = x == (boardWidth - 1) ? 0 : x + 1;
+  int top = y == 0 ? boardHeight - 1 : y - 1;
+  int bottom = y == (boardHeight - 1) ? 0 : y + 1;
+
+  struct Coords
+  {
+    int x;
+    int y;
+  };
+
+  Coords coords[8] = 
+  {
+    {left, top},
+    {x, top},
+    {right, top},
+    {left, y},
+    {right, y},
+    {left, bottom},
+    {x, bottom},
+    {right, bottom}
+  };
+
+  int r = 0;
+  int g = 0;
+  int b = 0;
+
+  for (int i = 0; i < 8; i++)
+  {
+    Coords c = coords[i];
+    if (board[c.y][c.x])
+    {
+      Color parentColor = boardColor[c.y][c.x];
+      r += parentColor.r;
+      g += parentColor.g;
+      b += parentColor.b;
+    }
+  }
+
+  // new born cells always 3 parents
+  r /= 3;
+  g /= 3;
+  b /= 3;
+
+  boardColor[y][x] = {r, g, b};
+}
+
+uint16_t colorToRGB565(Color color)
+{
+  // RRRRR GGGGGG BBBBB
+
+  uint16_t r = color.r >> 3;
+  uint16_t g = color.g >> 2;
+  uint16_t b = color.b >> 3;
+
+  return (r << 11) | (g << 5) | b;
+}
+
 void simStep()
 {
   M5.Display.startWrite();
@@ -180,6 +251,7 @@ void simStep()
         if (aliveNeighborCount == 3)
         {
           currCellAlive = true;
+          setInheritedColor(*boardPrev, x, y);
         }
       }
 
@@ -190,7 +262,14 @@ void simStep()
       {
         int pixelX = x * pixelsPerTile;
         int pixelY = y * pixelsPerTile;
-        uint16_t tileColor = currCellAlive ? colorAlive: colorDead;
+        uint16_t tileColor = colorDead;
+
+        if (currCellAlive)
+        {
+          Color color = boardColor[y][x];
+          tileColor = colorToRGB565(color);
+        }
+
         M5.Display.fillRect(pixelX, pixelY, pixelsPerTile, pixelsPerTile, tileColor);
       }
     }
@@ -222,6 +301,7 @@ void simTask(int start, int end)
         if (aliveNeighborCount == 3)
         {
           currCellAlive = true;
+          setInheritedColor(*boardPrev, x, y);
         }
       }
 
@@ -263,7 +343,14 @@ void drawBoardCurr()
       {
         int pixelX = x * pixelsPerTile;
         int pixelY = y * pixelsPerTile;
-        uint16_t tileColor = currCellAlive ? colorAlive: colorDead;
+        uint16_t tileColor = colorDead;
+
+        if (currCellAlive)
+        {
+          Color color = boardColor[y][x];
+          tileColor = colorToRGB565(color);
+        }
+
         M5.Display.fillRect(pixelX, pixelY, pixelsPerTile, pixelsPerTile, tileColor);
       }
     }
@@ -272,15 +359,61 @@ void drawBoardCurr()
   M5.Display.endWrite();
 }
 
+void randomBoardColor(int x, int y)
+{
+  constexpr int randomTileSize = 40;
+
+  int xmod = x % randomTileSize;
+  int ymod = y % randomTileSize;
+
+  bool rightSide = xmod >= (randomTileSize / 2);
+  bool bottom = ymod >= (randomTileSize / 2);
+
+  Color color;
+
+  if (rightSide)
+  {
+    if (bottom)
+    {
+      color = {255, 255, 0}; // YELLOW
+    }
+    else
+    {
+      color = {0, 255, 0}; // GREEN
+    }
+  }
+  else
+  {
+    if (bottom)
+    {
+      color = {0, 0, 255}; // BLUE
+    }
+    else
+    {
+      color = {255, 0, 0}; // RED
+    }
+  }
+
+  boardColor[y][x] = color;
+}
+
 void randomBoard()
 {
   for (int y = 0; y < boardHeight; ++y) {
     for (int x = 0; x < boardWidth; ++x) {
       boardInit[y][x] = random(100) < 30;
 
+      randomBoardColor(x, y);
+
       int pixelX = x * pixelsPerTile;
       int pixelY = y * pixelsPerTile;
-      uint16_t tileColor = boardInit[y][x] ? colorAlive: colorDead;
+      uint16_t tileColor = colorDead;
+
+      if (boardInit[y][x])
+      {
+        Color color = boardColor[y][x];
+        tileColor = colorToRGB565(color);
+      }
       M5.Display.fillRect(pixelX, pixelY, pixelsPerTile, pixelsPerTile, tileColor);
     }
   }
